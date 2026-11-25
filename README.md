@@ -2,6 +2,12 @@
 
 A personal online exam platform inspired by the TSA (Vietnamese "Đánh giá Tư duy") exam interface. Lets you import questions from PDF, take exams with auto-save and pause/resume, then manually mark yourself and track best scores.
 
+## 🌐 Live site
+
+- **URL:** https://1319c18e-76db-420e-b6cb-0eef3671868b.vip.gensparksite.com
+- **Passcode:** `momongauongnuocdua` (change via `gsk hosted secret_put --name APP_PASSCODE --value '<new>'`)
+- **GitHub:** https://github.com/shio0zzz/luyen-thi-tsa
+
 ## Features
 
 | Area | Feature |
