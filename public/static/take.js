@@ -85,6 +85,9 @@ function header() {
         <div class="flex items-center gap-4">
           <div class="text-sm text-slate-600">Time left</div>
           <div id="timer" class="text-2xl font-mono font-bold text-slate-800 tabular-nums">00:00:00</div>
+          <button id="pause-btn" class="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-md text-sm font-medium" title="Save progress and leave; you can resume later">
+            <i class="fas fa-pause mr-1"></i> Pause
+          </button>
           <button id="submit-btn" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md text-sm font-medium">
             <i class="fas fa-paper-plane mr-1"></i> Submit
           </button>
@@ -244,6 +247,7 @@ function bind() {
   });
 
   document.getElementById('submit-btn')?.addEventListener('click', submitAttempt);
+  document.getElementById('pause-btn')?.addEventListener('click', pauseAttempt);
   document.getElementById('reopen-btn')?.addEventListener('click', reopenAttempt);
 
   if (locked) return;
@@ -323,6 +327,15 @@ async function submitAttempt(auto = false) {
   if (!auto && !confirm('Submit this attempt? Answers will be locked (you can reopen to edit).')) return;
   await api.post(`/api/attempts/${attemptId}/submit`, { time_spent_seconds: totalSeconds() });
   location.href = `/attempts/${attemptId}/mark`;
+}
+
+async function pauseAttempt() {
+  // Snapshot elapsed time to server so timer resumes correctly.
+  try {
+    await api.post(`/api/attempts/${attemptId}/pause`, { time_spent_seconds: totalSeconds() });
+  } catch (e) { console.warn('pause failed', e); }
+  // Go home; next visit to /attempts/<id>/take resumes right where we left off.
+  location.href = '/';
 }
 
 async function reopenAttempt() {

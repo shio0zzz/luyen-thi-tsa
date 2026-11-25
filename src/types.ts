@@ -1,5 +1,6 @@
 export type Bindings = {
   DB: D1Database
+  APP_PASSCODE?: string
 }
 
 export type QuestionType = 'mcq' | 'multi' | 'tf' | 'fill' | 'matching' | 'short'

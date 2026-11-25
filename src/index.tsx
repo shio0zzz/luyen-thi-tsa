@@ -1,12 +1,95 @@
 import { Hono } from 'hono'
 import { renderer } from './renderer'
 import api from './routes/api'
+import { requireAuth, issueToken, COOKIE_NAME, COOKIE_MAX_AGE, setCookie, deleteCookie } from './auth'
 import type { Bindings } from './types'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+// Passcode gate (enabled only when APP_PASSCODE secret is set)
+app.use('*', requireAuth)
+
 app.use(renderer)
 app.route('/api', api)
+
+/* ---------- Login / Logout ---------- */
+
+app.get('/login', (c) => {
+  const err = c.req.query('err')
+  const back = c.req.query('back') ?? '/'
+  const gateOff = !c.env.APP_PASSCODE
+  return c.render(
+    <div class="min-h-screen grid place-items-center p-6">
+      <div class="exam-card p-8 w-full max-w-md">
+        <div class="flex items-center gap-3 mb-6">
+          <div class="w-10 h-10 bg-blue-600 text-white rounded-lg grid place-items-center font-bold">EL</div>
+          <div>
+            <h1 class="text-xl font-bold">Exam Lab</h1>
+            <p class="text-xs text-slate-500">Enter passcode to continue</p>
+          </div>
+        </div>
+        {gateOff ? (
+          <div class="mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded text-sm">
+            Passcode is not set on this server (local dev). You can just click <b>Enter</b>.
+          </div>
+        ) : null}
+        {err ? (
+          <div class="mb-4 p-3 bg-red-50 border border-red-200 text-red-800 rounded text-sm">
+            Wrong passcode. Try again.
+          </div>
+        ) : null}
+        <form method="POST" action="/login" class="space-y-3">
+          <input type="hidden" name="back" value={back} />
+          <input
+            type="password"
+            name="passcode"
+            autofocus
+            placeholder="Passcode"
+            class="w-full border border-slate-300 rounded-md px-3 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+          <button
+            type="submit"
+            class="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-semibold"
+          >
+            <i class="fas fa-unlock-alt mr-1"></i> Enter
+          </button>
+        </form>
+        <p class="text-xs text-slate-400 mt-4">
+          Set or change the passcode by updating the <code>APP_PASSCODE</code> secret on your deployment.
+        </p>
+      </div>
+    </div>
+  )
+})
+
+app.post('/login', async (c) => {
+  const form = await c.req.parseBody()
+  const passcode = String(form.passcode ?? '')
+  const back = String(form.back ?? '/') || '/'
+  const secret = c.env.APP_PASSCODE
+  if (!secret) {
+    // No gate configured — issue nothing, just bounce back
+    return c.redirect(back.startsWith('/') ? back : '/')
+  }
+  if (passcode !== secret) {
+    const safeBack = encodeURIComponent(back)
+    return c.redirect(`/login?err=1&back=${safeBack}`)
+  }
+  const token = await issueToken(secret)
+  setCookie(c, COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: new URL(c.req.url).protocol === 'https:',
+    path: '/',
+    maxAge: COOKIE_MAX_AGE,
+  })
+  return c.redirect(back.startsWith('/') ? back : '/')
+})
+
+app.post('/logout', (c) => {
+  deleteCookie(c, COOKIE_NAME, { path: '/' })
+  return c.redirect('/login')
+})
 
 /* ---------- Pages ---------- */
 
@@ -62,12 +145,23 @@ function HomePage() {
               <p class="text-xs text-slate-500">Personal online exam platform</p>
             </div>
           </div>
-          <button
-            id="new-exam-btn"
-            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2"
-          >
-            <i class="fas fa-plus"></i> New exam
-          </button>
+          <div class="flex items-center gap-2">
+            <button
+              id="new-exam-btn"
+              class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2"
+            >
+              <i class="fas fa-plus"></i> New exam
+            </button>
+            <form method="POST" action="/logout" class="inline">
+              <button
+                type="submit"
+                class="bg-white border border-slate-300 hover:bg-slate-50 text-slate-600 px-3 py-2 rounded-md text-sm"
+                title="Sign out (only visible when passcode is enabled)"
+              >
+                <i class="fas fa-sign-out-alt"></i>
+              </button>
+            </form>
+          </div>
         </div>
       </header>
       <main class="max-w-6xl mx-auto p-6">

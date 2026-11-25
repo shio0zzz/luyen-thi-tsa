@@ -1,5 +1,14 @@
 import { api, statusChip, escapeHtml } from '/static/common.js';
 
+function formatScore(n) {
+  const num = Number(n);
+  return Number.isInteger(num) ? String(num) : num.toFixed(2);
+}
+function pct(score, max) {
+  if (!max) return 0;
+  return Math.round((Number(score) / Number(max)) * 100);
+}
+
 async function load() {
   const { exams } = await api.get('/api/exams');
   const list = document.getElementById('exam-list');
@@ -11,32 +20,47 @@ async function load() {
       </div>`;
     return;
   }
-  list.innerHTML = exams.map((e) => `
+  list.innerHTML = exams.map((e) => {
+    // Best mark next to title (only when at least one attempt is marked)
+    const best = (e.best_score != null && e.best_max_score != null)
+      ? `<span class="chip chip-marked" title="Best mark across ${e.attempt_count} attempt${e.attempt_count === 1 ? '' : 's'}">
+           <i class="fas fa-trophy"></i> ${formatScore(e.best_score)} / ${formatScore(e.best_max_score)} (${pct(e.best_score, e.best_max_score)}%)
+         </span>` : '';
+    const paused = e.in_progress_count > 0
+      ? `<span class="chip chip-in-progress" title="You have an unfinished attempt"><i class="fas fa-pause"></i> ${e.in_progress_count} paused</span>` : '';
+    const resumeBtn = e.resume_attempt_id
+      ? `<a href="/attempts/${e.resume_attempt_id}/take" class="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-md text-sm font-medium">
+           <i class="fas fa-play mr-1"></i> Resume
+         </a>`
+      : '';
+    return `
     <div class="exam-card p-5 flex items-center justify-between gap-6">
       <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-3 mb-1">
+        <div class="flex items-center gap-3 mb-1 flex-wrap">
           <h3 class="text-lg font-semibold text-slate-800 truncate">${escapeHtml(e.title)}</h3>
-          <span class="text-xs text-slate-500">${e.question_count} questions · ${e.duration_minutes} min</span>
+          ${best}
+          ${paused}
         </div>
         <p class="text-sm text-slate-500 truncate">${escapeHtml(e.description ?? '')}</p>
-        <p class="text-xs text-slate-400 mt-1">${e.attempt_count} attempts</p>
+        <p class="text-xs text-slate-400 mt-1">${e.question_count} questions · ${e.duration_minutes} min · ${e.attempt_count} attempt${e.attempt_count === 1 ? '' : 's'}</p>
       </div>
       <div class="flex items-center gap-2">
+        ${resumeBtn}
         <button data-start="${e.id}" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
-          <i class="fas fa-play mr-1"></i> Start
+          <i class="fas fa-play mr-1"></i> ${e.resume_attempt_id ? 'New attempt' : 'Start'}
         </button>
         <a href="/exams/${e.id}/manage" class="bg-white border border-slate-300 hover:bg-slate-50 px-4 py-2 rounded-md text-sm font-medium">
           <i class="fas fa-pen mr-1"></i> Edit
         </a>
-        <button data-attempts="${e.id}" class="bg-white border border-slate-300 hover:bg-slate-50 px-3 py-2 rounded-md text-sm">
+        <button data-attempts="${e.id}" class="bg-white border border-slate-300 hover:bg-slate-50 px-3 py-2 rounded-md text-sm" title="View all attempts">
           <i class="fas fa-list"></i>
         </button>
-        <button data-del="${e.id}" class="text-slate-400 hover:text-red-500 px-2">
+        <button data-del="${e.id}" class="text-slate-400 hover:text-red-500 px-2" title="Delete exam">
           <i class="fas fa-trash"></i>
         </button>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   list.querySelectorAll('[data-start]').forEach((b) =>
     b.addEventListener('click', async () => {

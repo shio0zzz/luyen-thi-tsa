@@ -9,7 +9,14 @@ api.get('/exams', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT e.*,
        (SELECT COUNT(*) FROM questions q WHERE q.exam_id = e.id) AS question_count,
-       (SELECT COUNT(*) FROM attempts a WHERE a.exam_id = e.id) AS attempt_count
+       (SELECT COUNT(*) FROM attempts a WHERE a.exam_id = e.id) AS attempt_count,
+       (SELECT COUNT(*) FROM attempts a WHERE a.exam_id = e.id AND a.status = 'in_progress') AS in_progress_count,
+       (SELECT MAX(id) FROM attempts a WHERE a.exam_id = e.id AND a.status = 'in_progress') AS resume_attempt_id,
+       (SELECT MAX(a.score) FROM attempts a WHERE a.exam_id = e.id AND a.status = 'marked') AS best_score,
+       (SELECT a.max_score FROM attempts a WHERE a.exam_id = e.id AND a.status = 'marked'
+          ORDER BY a.score DESC, a.marked_at DESC LIMIT 1) AS best_max_score,
+       (SELECT a.marked_at FROM attempts a WHERE a.exam_id = e.id AND a.status = 'marked'
+          ORDER BY a.score DESC, a.marked_at DESC LIMIT 1) AS best_marked_at
      FROM exams e ORDER BY e.id DESC`
   ).all()
   return c.json({ exams: results })
@@ -181,6 +188,20 @@ api.post('/attempts/:id/submit', async (c) => {
     `UPDATE attempts SET status='submitted', submitted_at=CURRENT_TIMESTAMP,
        time_spent_seconds=COALESCE(?, time_spent_seconds)
      WHERE id=? AND status='in_progress'`
+  )
+    .bind(time_spent_seconds ?? null, id)
+    .run()
+  return c.json({ ok: true })
+})
+
+// Pause = snapshot elapsed time to server so the next resume continues from there.
+// Status stays 'in_progress' so answers remain editable on resume.
+api.post('/attempts/:id/pause', async (c) => {
+  const id = Number(c.req.param('id'))
+  const { time_spent_seconds } = await c.req.json<any>().catch(() => ({}))
+  await c.env.DB.prepare(
+    `UPDATE attempts SET time_spent_seconds = COALESCE(?, time_spent_seconds)
+     WHERE id = ? AND status = 'in_progress'`
   )
     .bind(time_spent_seconds ?? null, id)
     .run()
