@@ -1,21 +1,75 @@
-// Client-side PDF → questions parser using PDF.js
+// Client-side PDF → questions parser using PDF.js.
 // Heuristic parser tuned for Vietnamese TSA-style exams but works broadly.
+//
+// Loading strategy:
+//  1. Try the ESM build via dynamic import() — modern path, fastest.
+//  2. If that fails (e.g. corporate proxy strips `.mjs` MIME type, or
+//     GlobalWorkerOptions is not exposed), fall back to the UMD build
+//     via an injected <script>, which guarantees `window.pdfjsLib`.
+//  3. ALWAYS set `GlobalWorkerOptions.workerSrc` before `getDocument()`.
 
-const PDFJS_SRC = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs';
-const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.worker.min.mjs';
+const PDFJS_VERSION = '4.7.76';
+const PDFJS_ESM = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.min.mjs`;
+const PDFJS_UMD = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/legacy/build/pdf.min.js`;
+const PDFJS_WORKER_ESM = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
+const PDFJS_WORKER_UMD = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/legacy/build/pdf.worker.min.js`;
+
+let pdfjsReady = null;
+
+function injectScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
 
 async function loadPdfJs() {
-  if (window.pdfjsLib) return window.pdfjsLib;
-  const mod = await import(PDFJS_SRC);
-  mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
-  window.pdfjsLib = mod;
-  return mod;
+  if (pdfjsReady) return pdfjsReady;
+  pdfjsReady = (async () => {
+    let lib = null;
+    let workerSrc = PDFJS_WORKER_ESM;
+
+    // Attempt 1 — ESM dynamic import
+    try {
+      const mod = await import(/* @vite-ignore */ PDFJS_ESM);
+      // Some builds expose GlobalWorkerOptions on the module, others only via default export
+      const candidate = mod && (mod.GlobalWorkerOptions ? mod : (mod.default || null));
+      if (candidate && candidate.GlobalWorkerOptions && typeof candidate.getDocument === 'function') {
+        lib = candidate;
+      }
+    } catch (e) {
+      console.warn('[pdf-import] ESM load failed, falling back to UMD:', e);
+    }
+
+    // Attempt 2 — UMD <script> fallback (always ends up on window.pdfjsLib)
+    if (!lib) {
+      await injectScript(PDFJS_UMD);
+      if (!window.pdfjsLib) throw new Error('PDF.js UMD loaded but window.pdfjsLib is not defined.');
+      lib = window.pdfjsLib;
+      workerSrc = PDFJS_WORKER_UMD;
+    }
+
+    // Set worker source BEFORE any getDocument() call
+    if (!lib.GlobalWorkerOptions) {
+      throw new Error('PDF.js loaded but GlobalWorkerOptions is missing — version mismatch?');
+    }
+    lib.GlobalWorkerOptions.workerSrc = workerSrc;
+    window.pdfjsLib = lib;
+    return lib;
+  })();
+  return pdfjsReady;
 }
 
 export async function parsePdfToQuestions(file, progress = () => {}) {
+  progress('Loading PDF.js…');
   const pdfjs = await loadPdfJs();
-  progress('Loading PDF document…');
+  progress('Reading file…');
   const buf = await file.arrayBuffer();
+  progress('Opening PDF…');
   const doc = await pdfjs.getDocument({ data: buf }).promise;
   const pageTexts = [];
   for (let p = 1; p <= doc.numPages; p++) {

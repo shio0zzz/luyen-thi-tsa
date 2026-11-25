@@ -19,8 +19,7 @@ export const renderer = jsxRenderer(({ children, title }) => {
           defer
           src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
         ></script>
-        {/* PDF.js for client-side PDF text extraction */}
-        <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs" type="module"></script>
+        {/* PDF.js is loaded on demand by /static/pdf-import.js — don't preload here */}
         <link rel="stylesheet" href="/static/app.css" />
       </head>
       <body class="bg-slate-100 text-slate-800 antialiased">{children}</body>
