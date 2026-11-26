@@ -12,6 +12,22 @@ app.use('*', requireAuth)
 app.use(renderer)
 app.route('/api', api)
 
+// Serve uploaded images from R2 at /uploads/*
+// Kept outside /api/* on purpose so <img src="/uploads/..."> works nicely.
+// Requires auth (same gate as the rest of the site), so your questions stay private.
+app.get('/uploads/*', async (c) => {
+  const url = new URL(c.req.url)
+  const key = decodeURIComponent(url.pathname.replace(/^\/uploads\//, ''))
+  if (!key) return c.notFound()
+  const obj = await c.env.R2.get(key)
+  if (!obj) return c.notFound()
+  const headers = new Headers()
+  headers.set('content-type', obj.httpMetadata?.contentType || 'application/octet-stream')
+  headers.set('cache-control', 'private, max-age=31536000, immutable')
+  headers.set('etag', obj.httpEtag)
+  return new Response(obj.body, { headers })
+})
+
 /* ---------- Login / Logout ---------- */
 
 app.get('/login', (c) => {

@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS questions (
   exam_id INTEGER NOT NULL,
   section_id INTEGER,
   number INTEGER NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('mcq','multi','tf','fill','matching','short')),
+  type TEXT NOT NULL CHECK (type IN ('mcq','multi','tf','fill','matching','short','image')),
   body TEXT NOT NULL,
   data TEXT NOT NULL DEFAULT '{}',
   correct_answer TEXT,

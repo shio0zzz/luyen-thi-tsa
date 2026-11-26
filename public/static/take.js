@@ -99,10 +99,14 @@ function header() {
 function questionBlock(q, locked) {
   const idx = state.currentIdx;
   const flagged = state.flagged.has(q.id);
+  // For image-type questions the whole question IS the image — show it big, no text body.
+  const stem = q.type === 'image' && q.data?.image_url
+    ? `<div class="flex-1"><img src="${q.data.image_url}" alt="Question ${q.number}" class="max-w-full h-auto rounded border border-slate-200 shadow-sm" /></div>`
+    : `<div class="flex-1 exam-body text-slate-800">${escapeHtml(q.body)}</div>`;
   return `
     <div class="mb-6 flex items-start gap-3">
       <div class="w-9 h-9 bg-slate-800 text-white rounded-md grid place-items-center font-bold shrink-0">${q.number}</div>
-      <div class="flex-1 exam-body text-slate-800">${escapeHtml(q.body)}</div>
+      ${stem}
       <button id="flag-btn" class="text-sm ${flagged ? 'text-amber-500' : 'text-slate-400'} hover:text-amber-500">
         <i class="fas fa-flag"></i>
       </button>
@@ -163,6 +167,9 @@ function renderQuestionBody(q, locked) {
             ${rights.map((r) => `<option value="${r.key}" ${mv[l.key] === r.key ? 'selected' : ''}>${escapeHtml(r.text)}</option>`).join('')}
           </select>
         </div>`).join('')}</div>`;
+    case 'image':
+      // Free-form answer under an image question. You mark it manually.
+      return `<textarea class="w-full border border-slate-300 rounded-md px-3 py-2 font-mono" rows="4" placeholder="Your answer (type anything — a letter, a number, working, whatever)…" ${dis}>${escapeHtml(val ?? '')}</textarea>`;
     case 'short':
     default:
       return `<textarea class="w-full border border-slate-300 rounded-md px-3 py-2" rows="4" placeholder="Your answer…" ${dis}>${escapeHtml(val ?? '')}</textarea>`;
@@ -301,7 +308,7 @@ function bind() {
         saveAnswer(q.id, map);
       })
     );
-  } else if (q.type === 'short') {
+  } else if (q.type === 'short' || q.type === 'image') {
     const ta = app.querySelector('textarea');
     ta?.addEventListener('input', () => {
       state.answers[q.id] = ta.value;

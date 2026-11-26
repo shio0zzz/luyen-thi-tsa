@@ -58,6 +58,7 @@ function initGrades() {
 }
 
 function suggestGrade(q, raw) {
+  if (q.type === 'image') return { is_correct: null }; // pure manual
   if (raw == null || raw === '') return { is_correct: null };
   const correct = q.correct_answer ? safeJson(q.correct_answer) : null;
   if (correct == null) return { is_correct: null };
@@ -143,24 +144,28 @@ function markBlock(q) {
   const autoBadge = g.auto
     ? `<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">auto-suggested</span>`
     : '';
+  // Image questions: the question IS the image, no stored correct answer — pure manual grade.
+  const stem = q.type === 'image' && q.data?.image_url
+    ? `<div class="flex-1"><img src="${q.data.image_url}" alt="Question ${q.number}" class="max-w-full h-auto rounded border border-slate-200" /></div>`
+    : `<div class="flex-1"><div class="exam-body text-slate-800">${escapeHtml(q.body)}</div></div>`;
+  const showCorrectPanel = q.type !== 'image';
   return `
     <section class="exam-card p-5" data-q="${q.id}">
       <div class="flex items-start gap-3 mb-3">
         <div class="w-8 h-8 bg-slate-800 text-white rounded-md grid place-items-center font-bold shrink-0 text-sm">${q.number}</div>
-        <div class="flex-1">
-          <div class="exam-body text-slate-800">${escapeHtml(q.body)}</div>
-        </div>
+        ${stem}
         <div class="text-xs text-slate-500 shrink-0">${q.points} pt${q.points === 1 ? '' : 's'}</div>
       </div>
-      <div class="grid md:grid-cols-2 gap-4">
+      <div class="grid ${showCorrectPanel ? 'md:grid-cols-2' : 'grid-cols-1'} gap-4">
         <div>
           <div class="text-xs font-semibold text-slate-500 mb-1">Candidate's answer</div>
           <div class="p-3 bg-slate-50 rounded border border-slate-200 text-sm min-h-[60px] whitespace-pre-wrap">${formatAnswer(q, ans)}</div>
         </div>
-        <div>
-          <div class="text-xs font-semibold text-slate-500 mb-1">Correct answer</div>
-          <div class="p-3 bg-emerald-50 rounded border border-emerald-200 text-sm min-h-[60px] whitespace-pre-wrap">${formatAnswer(q, correct) || '<span class="text-slate-400">(none set — mark by hand)</span>'}</div>
-        </div>
+        ${showCorrectPanel ? `
+          <div>
+            <div class="text-xs font-semibold text-slate-500 mb-1">Correct answer</div>
+            <div class="p-3 bg-emerald-50 rounded border border-emerald-200 text-sm min-h-[60px] whitespace-pre-wrap">${formatAnswer(q, correct) || '<span class="text-slate-400">(none set — mark by hand)</span>'}</div>
+          </div>` : ''}
       </div>
       <div class="mt-4 grid gap-3 items-center" style="grid-template-columns: auto auto auto 1fr auto;">
         <div class="flex items-center gap-2 text-sm">
@@ -204,6 +209,9 @@ function formatNum(n) {
 
 function formatAnswer(q, v) {
   if (v == null || v === '') return '<span class="text-slate-400">(no answer)</span>';
+  if (q.type === 'image' || q.type === 'short') {
+    return escapeHtml(v);
+  }
   if (q.type === 'mcq') {
     const opt = (q.data?.options || []).find((o) => o.key === v);
     return `<b>${escapeHtml(v)}.</b> ${opt ? escapeHtml(opt.text) : ''}`;

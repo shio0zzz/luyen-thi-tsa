@@ -1,5 +1,5 @@
 import { api, renderMath, escapeHtml } from '/static/common.js';
-import { parsePdfToQuestions } from '/static/pdf-import.js';
+import { openPdfCropper } from '/static/pdf-import.js';
 
 const app = document.getElementById('app');
 const examId = Number(app.dataset.examId);
@@ -28,7 +28,7 @@ function render() {
         </div>
         <div class="flex items-center gap-2">
           <label class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-md text-sm font-medium cursor-pointer">
-            <i class="fas fa-file-pdf mr-1"></i> Import PDF
+            <i class="fas fa-crop mr-1"></i> Import PDF (crop)
             <input type="file" accept="application/pdf" id="pdf-input" class="hidden" />
           </label>
           <button id="add-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
@@ -65,7 +65,7 @@ function editor(q) {
       <div class="flex items-center gap-2">
         <input id="f-number" type="number" value="${q.number}" class="w-20 border border-slate-300 rounded px-2 py-1" />
         <select id="f-type" class="border border-slate-300 rounded px-2 py-1">
-          ${['mcq','multi','tf','fill','matching','short'].map((t) => `<option value="${t}" ${q.type === t ? 'selected' : ''}>${t.toUpperCase()}</option>`).join('')}
+          ${['mcq','multi','tf','fill','matching','short','image'].map((t) => `<option value="${t}" ${q.type === t ? 'selected' : ''}>${t.toUpperCase()}</option>`).join('')}
         </select>
         <label class="text-sm">Points
           <input id="f-points" type="number" step="0.5" min="0" value="${q.points}" class="w-20 border border-slate-300 rounded px-2 py-1 ml-1" />
@@ -146,6 +146,14 @@ function typeEditor(q) {
       </div>
       <p class="text-xs text-slate-400 mt-2">Correct answer format: JSON like <code>{"L1":"R2","L2":"R1"}</code>.</p>`;
   }
+  if (q.type === 'image') {
+    const url = q.data?.image_url || '';
+    return `
+      <label class="block text-xs font-semibold text-slate-500 mb-1">Image URL</label>
+      <input id="f-image-url" type="text" value="${escapeHtml(url)}" placeholder="/uploads/..." class="w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono mb-2" />
+      ${url ? `<img src="${url}" alt="preview" class="max-w-full h-auto rounded border border-slate-200" />` : '<p class="text-xs text-slate-400">No image yet. Use <b>Import PDF (crop)</b> to add image questions, or paste a URL above.</p>'}
+      <p class="text-xs text-slate-400 mt-1">Image-type questions have no auto-grade — they are marked manually.</p>`;
+  }
   return '<p class="text-xs text-slate-500">Short-answer: no extra fields.</p>';
 }
 
@@ -181,6 +189,9 @@ function collectEditor() {
     document.querySelectorAll('[data-left-key]').forEach((el, i) => left.push({ key: el.value, text: document.querySelector(`[data-left-text="${i}"]`)?.value || '' }));
     document.querySelectorAll('[data-right-key]').forEach((el, i) => right.push({ key: el.value, text: document.querySelector(`[data-right-text="${i}"]`)?.value || '' }));
     q.data.left = left; q.data.right = right;
+  } else if (type === 'image') {
+    const url = document.getElementById('f-image-url')?.value || '';
+    q.data.image_url = url;
   }
   return q;
 }
@@ -283,95 +294,48 @@ function bindOptionRows() {
 async function onPdf(e) {
   const file = e.target.files?.[0];
   if (!file) return;
-  const loader = document.createElement('div');
-  loader.className = 'fixed inset-0 bg-black/40 grid place-items-center z-50';
-  loader.innerHTML = `<div class="bg-white p-6 rounded-lg shadow max-w-md w-full">
-    <div class="font-semibold mb-2"><i class="fas fa-spinner fa-spin mr-2"></i>Parsing PDF…</div>
-    <div class="text-sm text-slate-500" id="loader-msg">Extracting text with PDF.js</div>
-  </div>`;
-  document.body.appendChild(loader);
   try {
-    const msg = loader.querySelector('#loader-msg');
-    msg.textContent = 'Extracting text…';
-    const questions = await parsePdfToQuestions(file, (m) => msg.textContent = m);
-    if (!questions.length) { alert('No questions detected. You can add them manually.'); return; }
-    showImportPreview(questions);
+    // Opens a full-screen PDF viewer where the user drags boxes around each question.
+    // On "Import", it uploads each crop to R2 and creates image-type questions.
+    const created = await openPdfCropper(file, {
+      startingNumber: (state.questions[state.questions.length - 1]?.number || 0) + 1,
+      onImport: async (crops) => {
+        // crops: [{ blob, contentType, number }]
+        const made = [];
+        for (const c of crops) {
+          const upload = await fetch('/api/uploads', {
+            method: 'POST',
+            headers: { 'content-type': c.contentType },
+            body: await c.blob.arrayBuffer(),
+          }).then((r) => r.json());
+          made.push({
+            number: c.number,
+            type: 'image',
+            body: '', // the image is the question
+            data: { image_url: upload.url, width: c.width, height: c.height },
+            correct_answer: null,
+            points: 1,
+          });
+        }
+        if (made.length) {
+          await fetch(`/api/exams/${examId}/questions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(made),
+          });
+        }
+        return made.length;
+      },
+    });
+    if (created > 0) {
+      await load();
+    }
   } catch (err) {
     console.error(err);
-    alert('PDF parsing failed: ' + err.message);
+    alert('PDF import failed: ' + err.message);
   } finally {
-    loader.remove();
     e.target.value = '';
   }
-}
-
-function showImportPreview(questions) {
-  const wrap = document.createElement('div');
-  wrap.className = 'fixed inset-0 bg-black/40 z-50 grid place-items-center';
-  wrap.innerHTML = `
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
-      <div class="p-4 border-b border-slate-200 flex items-center justify-between">
-        <div>
-          <div class="font-semibold">Import preview — ${questions.length} questions detected</div>
-          <div class="text-xs text-slate-500">Review, edit, or deselect before importing. You can refine any question in the editor afterwards.</div>
-        </div>
-        <button id="close-preview" class="text-slate-400 hover:text-slate-700"><i class="fas fa-times"></i></button>
-      </div>
-      <div class="p-4 overflow-auto flex-1 space-y-3">
-        ${questions.map((q, i) => `
-          <div class="border border-slate-200 rounded p-3">
-            <div class="flex items-center gap-2 mb-2 text-xs">
-              <label class="flex items-center gap-1"><input type="checkbox" data-imp-sel="${i}" checked /> include</label>
-              <span class="px-2 py-0.5 bg-slate-100 rounded uppercase font-semibold">${q.type}</span>
-              <input type="number" data-imp-num="${i}" value="${q.number}" class="w-16 border border-slate-300 rounded px-1 py-0.5" />
-              <span class="text-slate-400">#${q.number}</span>
-            </div>
-            <textarea data-imp-body="${i}" rows="3" class="w-full border border-slate-300 rounded px-2 py-1 text-sm font-mono">${escapeHtml(q.body)}</textarea>
-            ${q.type === 'mcq' ? `
-              <div class="mt-2 grid grid-cols-2 gap-1 text-sm">
-                ${(q.data?.options || []).map((o, oi) => `
-                  <div class="flex gap-1">
-                    <input type="text" value="${escapeHtml(o.key)}" data-imp-opt-key="${i}-${oi}" class="w-10 border border-slate-300 rounded px-1 py-0.5" />
-                    <input type="text" value="${escapeHtml(o.text)}" data-imp-opt-text="${i}-${oi}" class="flex-1 border border-slate-300 rounded px-1 py-0.5" />
-                  </div>`).join('')}
-              </div>` : ''}
-            <div class="mt-2 text-xs flex items-center gap-2">
-              <span class="text-slate-500">Correct answer:</span>
-              <input type="text" data-imp-correct="${i}" value="${escapeHtml(q.correct_answer ?? '')}" placeholder="e.g. B" class="flex-1 border border-slate-300 rounded px-2 py-0.5" />
-            </div>
-          </div>`).join('')}
-      </div>
-      <div class="p-4 border-t border-slate-200 flex justify-end gap-2">
-        <button id="cancel-import" class="px-4 py-2 border border-slate-300 rounded hover:bg-slate-50 text-sm">Cancel</button>
-        <button id="confirm-import" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold">Import selected</button>
-      </div>
-    </div>`;
-  document.body.appendChild(wrap);
-  wrap.querySelector('#close-preview').onclick = () => wrap.remove();
-  wrap.querySelector('#cancel-import').onclick = () => wrap.remove();
-  wrap.querySelector('#confirm-import').onclick = async () => {
-    const sel = [];
-    questions.forEach((q, i) => {
-      if (!wrap.querySelector(`[data-imp-sel="${i}"]`).checked) return;
-      const q2 = { ...q };
-      q2.number = Number(wrap.querySelector(`[data-imp-num="${i}"]`).value);
-      q2.body = wrap.querySelector(`[data-imp-body="${i}"]`).value;
-      q2.correct_answer = wrap.querySelector(`[data-imp-correct="${i}"]`).value || null;
-      if (q.type === 'mcq' && q.data?.options) {
-        q2.data = { options: q.data.options.map((o, oi) => ({
-          key: wrap.querySelector(`[data-imp-opt-key="${i}-${oi}"]`).value,
-          text: wrap.querySelector(`[data-imp-opt-text="${i}-${oi}"]`).value,
-        })) };
-      }
-      sel.push(q2);
-    });
-    if (!sel.length) { alert('Nothing selected'); return; }
-    await fetch(`/api/exams/${examId}/questions`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sel),
-    });
-    wrap.remove();
-    await load();
-  };
 }
 
 load();

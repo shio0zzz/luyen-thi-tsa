@@ -3,6 +3,28 @@ import type { Bindings, QuestionRow, AttemptRow, AnswerRow, ExamRow } from '../t
 
 const api = new Hono<{ Bindings: Bindings }>()
 
+/* ---------- Uploads (R2) ---------- */
+
+// Upload one image (raw bytes) → returns the public URL under /uploads/<key>
+// We accept raw bytes (not multipart) so the client can stream canvas-rendered
+// PNG/JPEG blobs directly with a single fetch + arrayBuffer.
+api.post('/uploads', async (c) => {
+  const contentType = c.req.header('content-type') || 'application/octet-stream'
+  const ext = contentType.includes('png') ? 'png'
+            : contentType.includes('jpeg') || contentType.includes('jpg') ? 'jpg'
+            : contentType.includes('webp') ? 'webp'
+            : 'bin'
+  // Random, collision-resistant key under `uploads/YYYY/MM/<rand>.<ext>`
+  const now = new Date()
+  // Key is relative to the bucket — no leading "uploads/" so the public URL doesn't double-nest.
+  const key = `${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}/${crypto.randomUUID()}.${ext}`
+  const body = await c.req.arrayBuffer()
+  if (!body || body.byteLength === 0) return c.json({ error: 'empty body' }, 400)
+  if (body.byteLength > 10 * 1024 * 1024) return c.json({ error: 'file too large (>10MB)' }, 413)
+  await c.env.R2.put(key, body, { httpMetadata: { contentType } })
+  return c.json({ key, url: `/uploads/${key}`, size: body.byteLength, contentType })
+})
+
 /* ---------- Exams ---------- */
 
 api.get('/exams', async (c) => {

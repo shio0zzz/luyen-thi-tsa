@@ -1,9 +1,10 @@
 export type Bindings = {
   DB: D1Database
+  R2: R2Bucket
   APP_PASSCODE?: string
 }
 
-export type QuestionType = 'mcq' | 'multi' | 'tf' | 'fill' | 'matching' | 'short'
+export type QuestionType = 'mcq' | 'multi' | 'tf' | 'fill' | 'matching' | 'short' | 'image'
 
 export interface ExamRow {
   id: number
