@@ -88,7 +88,10 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
     const items = text.items.map((it) => {
       const baselineY = it.transform[5];
       const canvasY = viewport.height - baselineY * RENDER_SCALE;
-      return { str: it.str, y: canvasY, x: it.transform[4] * RENDER_SCALE };
+      // Glyph "height" — item.height is in PDF units, multiply by RENDER_SCALE.
+      // Fall back to item.transform[0] (font scale) if height is missing.
+      const h = (it.height || Math.abs(it.transform[0]) || 10) * RENDER_SCALE;
+      return { str: it.str, y: canvasY, x: it.transform[4] * RENDER_SCALE, h };
     });
     pages.push({
       pageIndex: p - 1,
@@ -146,11 +149,13 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
       }
     }
 
+    // Top of crop = baseline - glyph height - padding (so full glyphs aren't clipped).
+    const topY = Math.max(0, m.y - (m.h || 14) - Y_PADDING_TOP);
     slices.push({
       number: m.number,
       sectionTitle: findEnclosingSection(sections, m) || '',
       startPage: m.pageIndex,
-      startY: Math.max(0, m.y - Y_PADDING_TOP),
+      startY: topY,
       endPage,
       endY: Math.max(0, endY - Y_PADDING_BOTTOM),
       passagePrefix,
@@ -228,82 +233,99 @@ function textLines(items) {
   lines.push(cur);
   return lines.map((l) => ({
     text: l.items.sort((a, b) => a.x - b.x).map((x) => x.str).join(' ').replace(/\s+/g, ' ').trim(),
-    y: l.y,
+    y: l.y,  // baseline y of the line
+    h: Math.max(...l.items.map((x) => x.h || 10)), // tallest glyph on the line
   })).filter((l) => l.text);
 }
 
-const QUESTION_MARKERS = [
-  /^C[âa]u\s*(\d{1,3})\s*[.:)]/i,
-  /^Question\s*(\d{1,3})\s*[.:)]/i,
-  /^Q\s*(\d{1,3})\s*[.:)]/i,
-  /^B[àa]i\s*(\d{1,3})\s*[.:)]/i,
-  /^(\d{1,3})\s*[.)]\s+\S/,
-];
-
-// Section markers: "PHẦN 1/2/3" or "Tư duy Toán học / Đọc hiểu / Khoa học"
-const SECTION_REGEXES = [
-  /^PH[ÂẦ]N\s*([123IVX]+)/i,
-  /T[ưu]\s*duy\s*(To[áa]n\s*h[ọo]c|Đ[ọo]c\s*hi[ểe]u|Khoa\s*h[ọo]c)/i,
-];
-
-// Shared-passage marker: "Ngữ liệu 1. Câu 41-50" / "Ngữ liệu 1 - Câu 41 - 50" etc.
-// Captures: starting question number.
-const PASSAGE_REGEX = /Ng[ữu]\s*li[ệe]u\s*\d+\s*[.\-:–]\s*C[âa]u\s*(\d{1,3})\s*[–\-]\s*(\d{1,3})/i;
-
-// Also attach shared-info blocks for science (Phần 3). TSA sometimes marks these
-// as "Thông tin ... Câu A - B" or simply as a dedicated preamble.
-const INFO_REGEX = /Th[ôo]ng\s*tin\s*(?:cho|d[ùu]ng\s*cho)?.*?C[âa]u\s*(\d{1,3})\s*[–\-]\s*(\d{1,3})/i;
+// --- GLOBAL regex versions for page-wide scanning ---
+// These use /g so we can iterate every match on a page's concatenated text.
+const PASSAGE_REGEX_G = /Ng[ữu]\s*li[ệe]u\s*\d+\s*[.\-:–]?\s*C[âa]u\s*(\d{1,3})\s*[–\-]\s*(\d{1,3})/gi;
+const INFO_REGEX_G    = /Th[ôo]ng\s*tin\s*(?:cho|d[ùu]ng\s*cho)?.*?C[âa]u\s*(\d{1,3})\s*[–\-]\s*(\d{1,3})/gi;
+const QUESTION_RE_G   = /(?:^|[\s\n])(C[âa]u|Question|Q|B[àa]i)\s*(\d{1,3})\s*[.:)]/gi;
+const SECTION_RE_G    = /(PH[ÂẦ]N\s*[123IVX]+|T[ưu]\s*duy\s*(?:To[áa]n\s*h[ọo]c|Đ[ọo]c\s*hi[ểe]u|Khoa\s*h[ọo]c))/gi;
 
 function detectStructure(pages) {
-  const markers = [];   // { number, pageIndex, y }
-  const sections = [];  // { title, pageIndex, y }
-  const passages = [];  // { pageIndex, y, firstQuestion, lastQuestion }
+  const markers = [];   // { number, pageIndex, y, h }
+  const sections = [];  // { title, pageIndex, y, h }
+  const passages = [];  // { pageIndex, y, h, firstQuestion, lastQuestion }
   const seenNumbers = new Set();
 
   for (const page of pages) {
-    const lines = textLines(page.items).filter((l) => {
-      if (l.y < page.headerY) return false;           // ignore header band
-      if (l.y > page.footerY) return false;           // ignore footer band
-      if (/^Trang\s*\d+/i.test(l.text)) return false;
-      if (/^Page\s*\d+/i.test(l.text)) return false;
-      return true;
-    });
+    // Build ONE concatenated string for the page, remembering each item's
+    // start position in the string → map match indices back to items (and y).
+    // Items are read in top-to-bottom, left-to-right order.
+    const items = page.items
+      .slice()
+      .filter((it) => it.y >= page.headerY && it.y <= page.footerY)
+      .sort((a, b) => a.y - b.y || a.x - b.x);
 
-    for (const line of lines) {
-      // Section header?
-      for (const re of SECTION_REGEXES) {
-        const m = line.text.match(re);
-        if (m) {
-          sections.push({ title: line.text.slice(0, 80), pageIndex: page.pageIndex, y: line.y });
-          break;
-        }
+    // Build string with a single space between items; record each item's
+    // [startIndex, endIndex) in that string so we can look up its y later.
+    let pageText = '';
+    const itemSpans = []; // { start, end, item }
+    for (const it of items) {
+      const start = pageText.length;
+      pageText += it.str;
+      const end = pageText.length;
+      itemSpans.push({ start, end, item: it });
+      pageText += ' ';
+    }
+
+    const itemAtIndex = (idx) => {
+      // Binary search for the item whose span contains idx
+      let lo = 0, hi = itemSpans.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (idx < itemSpans[mid].start) hi = mid - 1;
+        else if (idx >= itemSpans[mid].end) lo = mid + 1;
+        else return itemSpans[mid].item;
       }
+      // If the match landed in a space between items, fall back to the nearest preceding item
+      return itemSpans[Math.max(0, hi)]?.item || null;
+    };
 
-      // Passage / shared-info header? (check BEFORE the generic numeric marker,
-      // since "Câu 41 - 50" shouldn't be parsed as "Câu 41")
-      const psgMatch = line.text.match(PASSAGE_REGEX) || line.text.match(INFO_REGEX);
-      if (psgMatch) {
+    // 1) Passages — check these first so they take precedence over bare "Câu 41" matches.
+    const passageRanges = [];
+    for (const re of [PASSAGE_REGEX_G, INFO_REGEX_G]) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(pageText))) {
+        const it = itemAtIndex(m.index);
+        if (!it) continue;
         passages.push({
-          pageIndex: page.pageIndex,
-          y: line.y,
-          firstQuestion: Number(psgMatch[1]),
-          lastQuestion: Number(psgMatch[2]),
+          pageIndex: page.pageIndex, y: it.y, h: it.h || 14,
+          firstQuestion: Number(m[1]), lastQuestion: Number(m[2]),
         });
-        continue; // don't also match this line as a question marker
+        passageRanges.push([m.index, m.index + m[0].length]);
       }
+    }
+    const inPassage = (idx) => passageRanges.some(([s, e]) => idx >= s && idx < e);
 
-      // Question marker?
-      for (const re of QUESTION_MARKERS) {
-        const m = line.text.match(re);
-        if (m) {
-          const n = Number(m[1]);
-          if (n >= 1 && n <= 999 && !seenNumbers.has(n)) {
-            seenNumbers.add(n);
-            markers.push({ number: n, pageIndex: page.pageIndex, y: line.y });
-          }
-          break;
-        }
-      }
+    // 2) Sections (PHẦN N, TƯ DUY ...)
+    SECTION_RE_G.lastIndex = 0;
+    let sm;
+    while ((sm = SECTION_RE_G.exec(pageText))) {
+      const it = itemAtIndex(sm.index);
+      if (!it) continue;
+      sections.push({
+        title: sm[0].slice(0, 80), pageIndex: page.pageIndex, y: it.y, h: it.h || 14,
+      });
+    }
+
+    // 3) Question markers
+    QUESTION_RE_G.lastIndex = 0;
+    let qm;
+    while ((qm = QUESTION_RE_G.exec(pageText))) {
+      // Skip if this match was already consumed by a passage match (e.g. "Câu 41-50")
+      if (inPassage(qm.index)) continue;
+      const n = Number(qm[2]);
+      if (n < 1 || n > 999) continue;
+      if (seenNumbers.has(n)) continue;
+      const it = itemAtIndex(qm.index);
+      if (!it) continue;
+      seenNumbers.add(n);
+      markers.push({ number: n, pageIndex: page.pageIndex, y: it.y, h: it.h || 14 });
     }
   }
 
