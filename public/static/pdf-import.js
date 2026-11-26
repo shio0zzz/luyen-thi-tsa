@@ -88,11 +88,14 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
     const items = text.items.map((it) => {
       const baselineY = it.transform[5];
       const canvasY = viewport.height - baselineY * RENDER_SCALE;
-      // Glyph "height" — item.height is in PDF units, multiply by RENDER_SCALE.
-      // Fall back to item.transform[0] (font scale) if height is missing.
       const h = (it.height || Math.abs(it.transform[0]) || 10) * RENDER_SCALE;
       return { str: it.str, y: canvasY, x: it.transform[4] * RENDER_SCALE, h };
     });
+
+    // Compute the page's typical line-to-line baseline gap. This is a MUCH
+    // more reliable "one-line-of-text" measurement than `item.height`.
+    const lineHeight = estimateLineHeight(items) || 18;
+
     pages.push({
       pageIndex: p - 1,
       pageNumber: p,
@@ -100,7 +103,7 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
       width: viewport.width,
       height: viewport.height,
       items,
-      // Clip zone for this page
+      lineHeight,
       headerY: viewport.height * HEADER_FRAC,
       footerY: viewport.height * (1 - FOOTER_FRAC),
     });
@@ -132,32 +135,42 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
       }
     }
 
+    // Compute symmetric padding from the page's typical line height.
+    // Each marker's `y` is the glyph's baseline; the glyph tops sit ~`lineHeight`
+    // above that baseline. Use half of it so we include our own line but don't
+    // chew into the previous line.
+    const startPageLH = pages[m.pageIndex].lineHeight || 18;
+    const endPageLH   = pages[endPage].lineHeight || 18;
+    const topPad      = Math.round(startPageLH * 0.75);   // enough to include ascenders
+    const bottomPad   = Math.round(endPageLH * 0.55);     // leave a hair of whitespace above next marker
+
     // Find a passage that belongs to THIS question (one that ends at this marker).
     // Convention: the passage header appears before Câu A, and we attach the
     // span (passageStart → markerStart) above the first question's crop only.
     let passagePrefix = null;
     for (const psg of passages) {
-      // Match if this marker's number equals the passage's starting question
       if (psg.firstQuestion === m.number) {
+        const psgPageLH = pages[psg.pageIndex].lineHeight || 18;
         passagePrefix = {
           startPage: psg.pageIndex,
-          startY: Math.max(0, psg.y - Y_PADDING_TOP),
+          startY: Math.max(0, psg.y - Math.round(psgPageLH * 0.75)),
           endPage: m.pageIndex,
-          endY: Math.max(0, m.y - 2), // stop just above the "Câu N." line
+          // End passage prefix a hair above the "Câu N." line's TOP (not its baseline)
+          endY: Math.max(0, m.y - Math.round(startPageLH * 0.85)),
         };
         break;
       }
     }
 
-    // Top of crop = baseline - glyph height - padding (so full glyphs aren't clipped).
-    const topY = Math.max(0, m.y - (m.h || 14) - Y_PADDING_TOP);
+    const topY = Math.max(0, m.y - topPad);
+    const effectiveEndY = Math.max(0, endY - bottomPad);
     slices.push({
       number: m.number,
       sectionTitle: findEnclosingSection(sections, m) || '',
       startPage: m.pageIndex,
       startY: topY,
       endPage,
-      endY: Math.max(0, endY - Y_PADDING_BOTTOM),
+      endY: effectiveEndY,
       passagePrefix,
     });
   }
@@ -177,12 +190,16 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
 
   onProgress(`Building ${slices.length} crop${slices.length === 1 ? '' : 's'}…`);
   const crops = [];
+  const dropped = []; // { number, reason } — surfaced in the preview
   for (let i = 0; i < slices.length; i++) {
     const s = slices[i];
     const blob = await buildStitchedCrop(pages, s);
-    if (!blob) continue;
+    if (!blob) { dropped.push({ number: s.number, reason: 'empty crop (no visible area)' }); continue; }
     const dims = await blobDimensions(blob);
-    if (dims.height < MIN_CROP_HEIGHT) continue;
+    if (dims.height < MIN_CROP_HEIGHT) {
+      dropped.push({ number: s.number, reason: `crop too small (${dims.width}×${dims.height}px)` });
+      continue;
+    }
     crops.push({
       number: s.number,
       sectionTitle: s.sectionTitle,
@@ -199,7 +216,7 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
 
   if (crops.length === 0) throw new Error('Could not build any crops from this PDF.');
 
-  const picked = await showPreview(crops);
+  const picked = await showPreview(crops, dropped);
   if (!picked || picked.length === 0) {
     crops.forEach((c) => URL.revokeObjectURL(c.previewUrl));
     return 0;
@@ -216,6 +233,21 @@ export async function autoImportPdf(file, { startingNumber = 1, onImport, onProg
 function byOrder(a, b) { return a.pageIndex - b.pageIndex || a.y - b.y; }
 function isAfter(x, ref)  { return x.pageIndex > ref.pageIndex || (x.pageIndex === ref.pageIndex && x.y > ref.y); }
 function isBefore(x, ref) { return x.pageIndex < ref.pageIndex || (x.pageIndex === ref.pageIndex && x.y < ref.y); }
+
+/** Median vertical gap between consecutive text lines on a page.
+ *  Skips gaps larger than 60px (figures / big whitespace) and tiny gaps < 4px. */
+function estimateLineHeight(items) {
+  if (!items.length) return 0;
+  const ys = [...new Set(items.map((i) => Math.round(i.y)))].sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 1; i < ys.length; i++) {
+    const g = ys[i] - ys[i - 1];
+    if (g > 4 && g < 60) gaps.push(g);
+  }
+  if (!gaps.length) return 0;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)]; // median
+}
 
 function textLines(items) {
   if (!items.length) return [];
@@ -419,10 +451,17 @@ function blobDimensions(blob) {
 
 /* ---------- preview dialog ---------- */
 
-function showPreview(crops) {
+function showPreview(crops, dropped = []) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'fixed inset-0 bg-slate-900/80 z-[100] flex flex-col';
+    const droppedBanner = dropped.length ? `
+      <div class="bg-amber-500/15 border-b border-amber-500/30 text-amber-100 text-xs px-6 py-2">
+        <i class="fas fa-triangle-exclamation mr-1"></i>
+        <b>${dropped.length} question${dropped.length === 1 ? '' : 's'} were dropped</b>
+        (${dropped.map((d) => `Q${d.number}: ${d.reason}`).join('; ')}).
+        If you need them, add manually with the <b>Add question</b> button after import.
+      </div>` : '';
     overlay.innerHTML = `
       <header class="bg-slate-800 text-white px-6 py-3 flex items-center justify-between border-b border-slate-700">
         <div>
@@ -442,6 +481,7 @@ function showPreview(crops) {
           </button>
         </div>
       </header>
+      ${droppedBanner}
       <main class="flex-1 overflow-auto bg-slate-700 p-6">
         <div class="max-w-5xl mx-auto grid gap-4">
           ${crops.map((c, i) => `
