@@ -1,5 +1,5 @@
 import { api, renderMath, escapeHtml } from '/static/common.js';
-import { openPdfCropper } from '/static/pdf-import.js';
+import { autoImportPdf } from '/static/pdf-import.js';
 
 const app = document.getElementById('app');
 const examId = Number(app.dataset.examId);
@@ -28,7 +28,7 @@ function render() {
         </div>
         <div class="flex items-center gap-2">
           <label class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-md text-sm font-medium cursor-pointer">
-            <i class="fas fa-crop mr-1"></i> Import PDF (crop)
+            <i class="fas fa-wand-magic-sparkles mr-1"></i> Auto-import PDF
             <input type="file" accept="application/pdf" id="pdf-input" class="hidden" />
           </label>
           <button id="add-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
@@ -294,46 +294,84 @@ function bindOptionRows() {
 async function onPdf(e) {
   const file = e.target.files?.[0];
   if (!file) return;
+
+  // Progress overlay (updated by autoImportPdf via onProgress callback)
+  const loader = document.createElement('div');
+  loader.className = 'fixed inset-0 bg-black/50 grid place-items-center z-[90]';
+  loader.innerHTML = `
+    <div class="bg-white p-6 rounded-lg shadow-xl max-w-md w-full">
+      <div class="font-semibold mb-2"><i class="fas fa-wand-magic-sparkles mr-2 text-emerald-600"></i>Auto-importing PDF…</div>
+      <div class="text-sm text-slate-500" id="loader-msg">Starting…</div>
+    </div>`;
+  document.body.appendChild(loader);
+  const setMsg = (m) => { const el = loader.querySelector('#loader-msg'); if (el) el.textContent = m; };
+
   try {
-    // Opens a full-screen PDF viewer where the user drags boxes around each question.
-    // On "Import", it uploads each crop to R2 and creates image-type questions.
-    const created = await openPdfCropper(file, {
+    const created = await autoImportPdf(file, {
       startingNumber: (state.questions[state.questions.length - 1]?.number || 0) + 1,
-      onImport: async (crops) => {
-        // crops: [{ blob, contentType, number }]
+      onProgress: setMsg,
+      onImport: async (picked, onBatchProgress) => {
+        // Hide the main loader while the preview dialog is open; show again for uploads.
+        loader.style.display = 'none';
+
+        // Give the preview dialog time to close before swapping overlays
+        await new Promise((r) => setTimeout(r, 50));
+        loader.style.display = '';
+        setMsg(`Uploading ${picked.length} question${picked.length === 1 ? '' : 's'}…`);
+
         const made = [];
-        for (const c of crops) {
-          const upload = await fetch('/api/uploads', {
-            method: 'POST',
-            headers: { 'content-type': c.contentType },
-            body: await c.blob.arrayBuffer(),
-          }).then((r) => r.json());
-          made.push({
-            number: c.number,
-            type: 'image',
-            body: '', // the image is the question
-            data: { image_url: upload.url, width: c.width, height: c.height },
-            correct_answer: null,
-            points: 1,
-          });
+        for (let i = 0; i < picked.length; i++) {
+          const c = picked[i];
+          onBatchProgress(i + 1, picked.length);
+          setMsg(`Uploading ${i + 1} / ${picked.length}…`);
+          try {
+            const resp = await fetch('/api/uploads', {
+              method: 'POST',
+              headers: { 'content-type': c.contentType },
+              body: await c.blob.arrayBuffer(),
+            });
+            if (!resp.ok) {
+              const txt = await resp.text();
+              throw new Error(`upload #${i + 1} failed: ${resp.status} ${txt}`);
+            }
+            const upload = await resp.json();
+            made.push({
+              number: c.number,
+              type: 'image',
+              body: '', // the image IS the question
+              data: { image_url: upload.url, width: c.width, height: c.height },
+              correct_answer: null,
+              points: 1,
+            });
+          } catch (err) {
+            console.error('upload error for crop', i, err);
+            throw err; // surface to outer catch so user sees it
+          }
         }
         if (made.length) {
-          await fetch(`/api/exams/${examId}/questions`, {
+          setMsg('Saving questions to database…');
+          const resp = await fetch(`/api/exams/${examId}/questions`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(made),
           });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            throw new Error(`save failed: ${resp.status} ${txt}`);
+          }
         }
         return made.length;
       },
     });
     if (created > 0) {
+      setMsg(`Imported ${created} question${created === 1 ? '' : 's'}.`);
       await load();
     }
   } catch (err) {
     console.error(err);
     alert('PDF import failed: ' + err.message);
   } finally {
+    loader.remove();
     e.target.value = '';
   }
 }
