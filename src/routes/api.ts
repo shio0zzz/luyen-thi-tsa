@@ -95,15 +95,21 @@ api.post('/exams/:id/questions', async (c) => {
       q.section_id ?? null,
       q.number,
       q.type,
-      q.body,
+      q.body ?? '',
       typeof q.data === 'string' ? q.data : JSON.stringify(q.data ?? {}),
       q.correct_answer ?? null,
       q.points ?? 1,
       q.explanation ?? null
     )
   )
-  await c.env.DB.batch(batch)
-  return c.json({ ok: true, inserted: batch.length })
+  try {
+    await c.env.DB.batch(batch)
+    return c.json({ ok: true, inserted: batch.length })
+  } catch (err: any) {
+    // Surface the real D1 error so bugs don't look like opaque 500s
+    const msg = err?.cause?.message || err?.message || 'unknown db error'
+    return c.json({ error: 'insert failed', detail: msg, count: batch.length }, 500)
+  }
 })
 
 api.put('/questions/:id', async (c) => {
