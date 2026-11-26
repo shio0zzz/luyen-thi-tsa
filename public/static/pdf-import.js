@@ -280,10 +280,13 @@ const INFO_REGEX_G    = /Th[ôo]ng\s*tin\s*(?:cho|d[ùu]ng\s*cho)?.*?C[âa]u\s*(
 // Also drops the bare-numeric form ("1. Something") — too risky for multi-column
 // scientific text; we rely on the Vietnamese/English keyword prefix.
 const QUESTION_RE_G   = /(?:^|\n)\s*(C[âa]u|Question|Q|B[àa]i)\s*(\d{1,3})\s*[.:)]/gi;
-// Relaxed version for the safety-net second pass — matches anywhere, requires
-// whitespace before the keyword so option text like "80. Câu" still matches but
-// "a_câu" or similar would not.
-const QUESTION_RE_RELAXED_G = /(?:^|[\s.,;:!?)])\s*(C[âa]u|Question|B[àa]i)\s*(\d{1,3})\s*[.:)]/gi;
+// Relaxed version for the safety-net second pass. Only accepts matches where
+// "Câu" is preceded by: start-of-page, newline, OR the end of a sentence
+// (period + space). Requires it to be followed by a capital letter + text
+// (the question stem) — so subscripts or formula fragments can't match.
+// Also restricted to "Câu" only (not Question/Bài) — those rarely appear
+// mid-line in Vietnamese TSA PDFs.
+const QUESTION_RE_RELAXED_G = /(?:^|\n|[.!?]\s+)(C[âa]u)\s+(\d{1,3})\s*[.:)]\s+[A-ZĐÀÁẢÃẠÂẦẤẨẪẬĂẰẮẲẴẶÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴ]/gi;
 const SECTION_RE_G    = /(PH[ÂẦ]N\s*[123IVX]+|T[ưu]\s*duy\s*(?:To[áa]n\s*h[ọo]c|Đ[ọo]c\s*hi[ểe]u|Khoa\s*h[ọo]c))/gi;
 
 function detectStructure(pages) {
