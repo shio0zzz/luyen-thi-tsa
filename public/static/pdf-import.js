@@ -280,6 +280,10 @@ const INFO_REGEX_G    = /Th[ôo]ng\s*tin\s*(?:cho|d[ùu]ng\s*cho)?.*?C[âa]u\s*(
 // Also drops the bare-numeric form ("1. Something") — too risky for multi-column
 // scientific text; we rely on the Vietnamese/English keyword prefix.
 const QUESTION_RE_G   = /(?:^|\n)\s*(C[âa]u|Question|Q|B[àa]i)\s*(\d{1,3})\s*[.:)]/gi;
+// Relaxed version for the safety-net second pass — matches anywhere, requires
+// whitespace before the keyword so option text like "80. Câu" still matches but
+// "a_câu" or similar would not.
+const QUESTION_RE_RELAXED_G = /(?:^|[\s.,;:!?)])\s*(C[âa]u|Question|B[àa]i)\s*(\d{1,3})\s*[.:)]/gi;
 const SECTION_RE_G    = /(PH[ÂẦ]N\s*[123IVX]+|T[ưu]\s*duy\s*(?:To[áa]n\s*h[ọo]c|Đ[ọo]c\s*hi[ểe]u|Khoa\s*h[ọo]c))/gi;
 
 function detectStructure(pages) {
@@ -301,18 +305,24 @@ function detectStructure(pages) {
     // space between items on the same line. Record each item's
     // [startIndex, endIndex) in the string so we can look up its y later.
     // The newline separator lets us anchor regexes with ^/\n reliably.
+    // Also force a newline when X jumps backward (end-of-line → start-of-next),
+    // in case PDF.js reports slightly different Y for the new line's first item.
     let pageText = '';
     const itemSpans = []; // { start, end, item }
-    let prevY = null;
+    let prevY = null, prevXEnd = null;
     for (const it of items) {
       if (prevY !== null) {
-        pageText += (Math.abs(it.y - prevY) < 4) ? ' ' : '\n';
+        const sameY = Math.abs(it.y - prevY) < 4;
+        const xJumpedBack = prevXEnd !== null && it.x < prevXEnd - 20;
+        pageText += (sameY && !xJumpedBack) ? ' ' : '\n';
       }
       const start = pageText.length;
       pageText += it.str;
       const end = pageText.length;
       itemSpans.push({ start, end, item: it });
       prevY = it.y;
+      // crude x-end estimate = x + (chars * glyph width ~ h/2)
+      prevXEnd = it.x + (it.str.length * (it.h || 10) * 0.5);
     }
 
     const itemAtIndex = (idx) => {
@@ -356,7 +366,7 @@ function detectStructure(pages) {
       });
     }
 
-    // 3) Question markers
+    // 3) Question markers — FIRST pass: strict, line-start-only
     QUESTION_RE_G.lastIndex = 0;
     let qm;
     while ((qm = QUESTION_RE_G.exec(pageText))) {
@@ -366,6 +376,27 @@ function detectStructure(pages) {
       if (n < 1 || n > 999) continue;
       if (seenNumbers.has(n)) continue;
       const it = itemAtIndex(qm.index);
+      if (!it) continue;
+      seenNumbers.add(n);
+      markers.push({ number: n, pageIndex: page.pageIndex, y: it.y, h: it.h || 14 });
+    }
+
+    // 4) Safety net: find ANY "Câu N." anywhere in the page text (even mid-line),
+    //    then only accept matches whose number fills a hole in the expected
+    //    sequence (i.e. we already saw N-1 or N+1 on this page). This catches
+    //    the case where line-grouping heuristics joined a question start onto
+    //    the previous line (e.g. "80. Câu 4. Cho hàm ...").
+    QUESTION_RE_RELAXED_G.lastIndex = 0;
+    let rm;
+    while ((rm = QUESTION_RE_RELAXED_G.exec(pageText))) {
+      if (inPassage(rm.index)) continue;
+      const n = Number(rm[2]);
+      if (n < 1 || n > 999) continue;
+      if (seenNumbers.has(n)) continue;
+      // Only accept if an adjacent number exists among already-found markers.
+      const nearby = markers.some((mk) => Math.abs(mk.number - n) === 1);
+      if (!nearby) continue;
+      const it = itemAtIndex(rm.index);
       if (!it) continue;
       seenNumbers.add(n);
       markers.push({ number: n, pageIndex: page.pageIndex, y: it.y, h: it.h || 14 });
