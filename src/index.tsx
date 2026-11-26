@@ -4,6 +4,10 @@ import api from './routes/api'
 import { requireAuth, issueToken, COOKIE_NAME, COOKIE_MAX_AGE, setCookie, deleteCookie } from './auth'
 import type { Bindings } from './types'
 
+// Cache-busting version for /static/*.js URLs.
+// Changes on every build → forces browsers to re-fetch after a deploy.
+const BUILD_VERSION = String(Date.now())
+
 const app = new Hono<{ Bindings: Bindings }>()
 
 // Passcode gate (enabled only when APP_PASSCODE secret is set)
@@ -120,7 +124,7 @@ app.get('/exams/:id/manage', (c) => {
   return c.render(
     <div id="app" class="min-h-screen" data-exam-id={id}>
       <div class="p-6 text-slate-500">Loading editor…</div>
-      <script type="module" src="/static/manage.js"></script>
+      <script type="module" src={`/static/manage.js?v=${BUILD_VERSION}`}></script>
     </div>
   )
 })
@@ -130,7 +134,7 @@ app.get('/attempts/:id/take', (c) => {
   return c.render(
     <div id="app" class="min-h-screen" data-attempt-id={id}>
       <div class="p-6 text-slate-500">Loading exam…</div>
-      <script type="module" src="/static/take.js"></script>
+      <script type="module" src={`/static/take.js?v=${BUILD_VERSION}`}></script>
     </div>
   )
 })
@@ -140,7 +144,7 @@ app.get('/attempts/:id/mark', (c) => {
   return c.render(
     <div id="app" class="min-h-screen" data-attempt-id={id}>
       <div class="p-6 text-slate-500">Loading marking view…</div>
-      <script type="module" src="/static/mark.js"></script>
+      <script type="module" src={`/static/mark.js?v=${BUILD_VERSION}`}></script>
     </div>
   )
 })
@@ -181,7 +185,7 @@ function HomePage() {
       <main class="max-w-6xl mx-auto p-6">
         <div id="exam-list" class="grid gap-4"></div>
       </main>
-      <script type="module" src="/static/home.js"></script>
+      <script type="module" src={`/static/home.js?v=${BUILD_VERSION}`}></script>
     </>
   )
 }
