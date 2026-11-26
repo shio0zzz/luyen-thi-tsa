@@ -70,9 +70,7 @@ app.get('/login', (c) => {
             <i class="fas fa-unlock-alt mr-1"></i> Enter
           </button>
         </form>
-        <p class="text-xs text-slate-400 mt-4">
-          Set or change the passcode by updating the <code>APP_PASSCODE</code> secret on your deployment.
-        </p>
+
       </div>
     </div>
   )

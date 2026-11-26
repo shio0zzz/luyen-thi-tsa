@@ -242,7 +242,12 @@ function textLines(items) {
 // These use /g so we can iterate every match on a page's concatenated text.
 const PASSAGE_REGEX_G = /Ng[ữu]\s*li[ệe]u\s*\d+\s*[.\-:–]?\s*C[âa]u\s*(\d{1,3})\s*[–\-]\s*(\d{1,3})/gi;
 const INFO_REGEX_G    = /Th[ôo]ng\s*tin\s*(?:cho|d[ùu]ng\s*cho)?.*?C[âa]u\s*(\d{1,3})\s*[–\-]\s*(\d{1,3})/gi;
-const QUESTION_RE_G   = /(?:^|[\s\n])(C[âa]u|Question|Q|B[àa]i)\s*(\d{1,3})\s*[.:)]/gi;
+// Only match question markers that start at a line boundary (start-of-page OR
+// right after a newline). Prevents false positives like "... Hình 1. Mô tả ..."
+// or "A. Nguồn nitrogen ..." being mis-read as "Câu 1." or a bare numeric.
+// Also drops the bare-numeric form ("1. Something") — too risky for multi-column
+// scientific text; we rely on the Vietnamese/English keyword prefix.
+const QUESTION_RE_G   = /(?:^|\n)\s*(C[âa]u|Question|Q|B[àa]i)\s*(\d{1,3})\s*[.:)]/gi;
 const SECTION_RE_G    = /(PH[ÂẦ]N\s*[123IVX]+|T[ưu]\s*duy\s*(?:To[áa]n\s*h[ọo]c|Đ[ọo]c\s*hi[ểe]u|Khoa\s*h[ọo]c))/gi;
 
 function detectStructure(pages) {
@@ -260,16 +265,22 @@ function detectStructure(pages) {
       .filter((it) => it.y >= page.headerY && it.y <= page.footerY)
       .sort((a, b) => a.y - b.y || a.x - b.x);
 
-    // Build string with a single space between items; record each item's
-    // [startIndex, endIndex) in that string so we can look up its y later.
+    // Build string with a newline between items on DIFFERENT lines, single
+    // space between items on the same line. Record each item's
+    // [startIndex, endIndex) in the string so we can look up its y later.
+    // The newline separator lets us anchor regexes with ^/\n reliably.
     let pageText = '';
     const itemSpans = []; // { start, end, item }
+    let prevY = null;
     for (const it of items) {
+      if (prevY !== null) {
+        pageText += (Math.abs(it.y - prevY) < 4) ? ' ' : '\n';
+      }
       const start = pageText.length;
       pageText += it.str;
       const end = pageText.length;
       itemSpans.push({ start, end, item: it });
-      pageText += ' ';
+      prevY = it.y;
     }
 
     const itemAtIndex = (idx) => {
